@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // Client handles interaction with the Twitch API endpoints for authentication,
@@ -15,6 +16,7 @@ type Client struct {
 	ClientId     string
 	ClientSecret string
 	AccessToken  string
+	httpClient   *http.Client
 }
 
 // authResponse represents a response from the Twitch OAuth endpoint.
@@ -69,6 +71,7 @@ func NewClient(clientId string, clientSecret string) *Client {
 	return &Client{
 		ClientId:     clientId,
 		ClientSecret: clientSecret,
+		httpClient:   &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
@@ -81,7 +84,7 @@ func (c *Client) Auth() error {
 		"grant_type":    {"client_credentials"},
 	}
 
-	resp, err := http.PostForm("https://id.twitch.tv/oauth2/token", post)
+	resp, err := c.httpClient.PostForm("https://id.twitch.tv/oauth2/token", post)
 	if err != nil {
 		return err
 	}
@@ -105,16 +108,65 @@ func (c *Client) Auth() error {
 	return nil
 }
 
-// sendGET implements a standard authenticated GET request to Helix endpoints.
-func (c *Client) sendGET(apiUrl string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequest("GET", apiUrl, body)
+// doRequest wraps http.Client.Do, automatically injecting auth headers
+// and retrying exactly once if a 401 Unauthorized is returned (token expired).
+func (c *Client) doRequest(method string, apiUrl string, payload []byte) (*http.Response, error) {
+	req, err := c.createRequest(method, apiUrl, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+
+		err = c.Auth()
+		if err != nil {
+			return nil, fmt.Errorf("token refresh failed: %w", err)
+		}
+
+		req, err = c.createRequest(method, apiUrl, payload)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err = c.httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return resp, nil
+}
+
+// createRequest is a helper that prepares the http.Request with JSON payload and auth headers.
+func (c *Client) createRequest(method string, apiUrl string, payload []byte) (*http.Request, error) {
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewBuffer(payload)
+	}
+
+	req, err := http.NewRequest(method, apiUrl, body)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Client-Id", c.ClientId)
 	req.Header.Set("Authorization", "Bearer "+c.AccessToken)
 
-	resp, err := http.DefaultClient.Do(req)
+	if payload != nil || method == "POST" || method == "PUT" || method == "PATCH" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	return req, nil
+}
+
+// sendGET implements a standard authenticated GET request to Helix endpoints.
+func (c *Client) sendGET(apiUrl string) (*http.Response, error) {
+	resp, err := c.doRequest("GET", apiUrl, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -132,16 +184,8 @@ func (c *Client) sendGET(apiUrl string, body io.Reader) (*http.Response, error) 
 }
 
 // sendPOST implements a standard authenticated POST request to Helix endpoints.
-func (c *Client) sendPOST(apiUrl string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequest("POST", apiUrl, body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Client-Id", c.ClientId)
-	req.Header.Set("Authorization", "Bearer "+c.AccessToken)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
+func (c *Client) sendPOST(apiUrl string, payload []byte) (*http.Response, error) {
+	resp, err := c.doRequest("POST", apiUrl, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +207,7 @@ func (c *Client) sendPOST(apiUrl string, body io.Reader) (*http.Response, error)
 func (c *Client) GetStreamInfo(channelName string) (bool, error) {
 	apiUrl := "https://api.twitch.tv/helix/streams?user_login=" + channelName
 
-	resp, err := c.sendGET(apiUrl, nil)
+	resp, err := c.sendGET(apiUrl)
 	if err != nil {
 		return false, err
 	}
@@ -187,7 +231,7 @@ func (c *Client) GetStreamInfo(channelName string) (bool, error) {
 func (c *Client) GetUserId(channelName string) (string, error) {
 	apiUrl := "https://api.twitch.tv/helix/users?login=" + channelName
 
-	resp, err := c.sendGET(apiUrl, nil)
+	resp, err := c.sendGET(apiUrl)
 	if err != nil {
 		return "", err
 	}
@@ -233,7 +277,7 @@ func (c *Client) SubscribeToStream(
 	}
 
 	apiUrl := "https://api.twitch.tv/helix/eventsub/subscriptions"
-	resp, err := c.sendPOST(apiUrl, bytes.NewBuffer(data))
+	resp, err := c.sendPOST(apiUrl, data)
 	if err != nil {
 		return "", err
 	}
@@ -258,14 +302,7 @@ func (c *Client) SubscribeToStream(
 func (c *Client) DeleteSubscription(eventSubID string) error {
 	apiUrl := "https://api.twitch.tv/helix/eventsub/subscriptions?id=" + eventSubID
 
-	req, err := http.NewRequest("DELETE", apiUrl, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Client-Id", c.ClientId)
-	req.Header.Set("Authorization", "Bearer "+c.AccessToken)
-
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.doRequest("DELETE", apiUrl, nil)
 	if err != nil {
 		return err
 	}

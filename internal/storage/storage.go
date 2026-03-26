@@ -50,7 +50,8 @@ func (s *Store) Init() error {
 		created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_twitch_user_id ON subscriptions(twitch_user_id);
-	CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_user ON subscriptions(telegram_user_id);
+	DROP INDEX IF EXISTS idx_telegram_user;
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_user_twitch ON subscriptions(telegram_user_id, twitch_user_id);
 	`
 	_, err := s.db.Exec(query)
 	return err
@@ -62,15 +63,14 @@ func (s *Store) Close() error {
 }
 
 // UpsertSubscription creates or updates a subscription for the given Telegram user.
-// It relies on conflict resolution (ON CONFLICT) for telegram_user_id.
+// It relies on conflict resolution (ON CONFLICT) for telegram_user_id and twitch_user_id.
 func (s *Store) UpsertSubscription(sub *Subscription) error {
 	query := `
 	INSERT INTO subscriptions (telegram_user_id, telegram_chat_id, twitch_channel, twitch_user_id, eventsub_id, active, created_at)
 	VALUES (?, ?, ?, ?, ?, ?, ?)
-	ON CONFLICT(telegram_user_id) DO UPDATE SET
+	ON CONFLICT(telegram_user_id, twitch_user_id) DO UPDATE SET
 		telegram_chat_id = excluded.telegram_chat_id,
 		twitch_channel   = excluded.twitch_channel,
-		twitch_user_id   = excluded.twitch_user_id,
 		eventsub_id      = excluded.eventsub_id,
 		active           = excluded.active
 	`
@@ -86,11 +86,23 @@ func (s *Store) UpsertSubscription(sub *Subscription) error {
 	return err
 }
 
-// GetByTelegramUser retrieves the Subscription data associated with a specific Telegram User ID.
-func (s *Store) GetByTelegramUser(telegramUserID int64) (*Subscription, error) {
+// GetAllByTelegramUser retrieves all Subscriptions associated with a specific Telegram User ID.
+func (s *Store) GetAllByTelegramUser(telegramUserID int64) ([]Subscription, error) {
 	query := `SELECT id, telegram_user_id, telegram_chat_id, twitch_channel, twitch_user_id, eventsub_id, active, created_at
 	           FROM subscriptions WHERE telegram_user_id = ?`
-	row := s.db.QueryRow(query, telegramUserID)
+	rows, err := s.db.Query(query, telegramUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanSubscriptions(rows)
+}
+
+// GetSubscription retrieves a specific subscription for a user and a Twitch channel.
+func (s *Store) GetSubscription(telegramUserID int64, twitchChannel string) (*Subscription, error) {
+	query := `SELECT id, telegram_user_id, telegram_chat_id, twitch_channel, twitch_user_id, eventsub_id, active, created_at
+	           FROM subscriptions WHERE telegram_user_id = ? AND twitch_channel = ?`
+	row := s.db.QueryRow(query, telegramUserID, twitchChannel)
 	return scanSubscription(row)
 }
 
@@ -120,10 +132,23 @@ func (s *Store) GetAllActive() ([]Subscription, error) {
 	return scanSubscriptions(rows)
 }
 
-// Deactivate disables a subscription for the given Telegram User ID by setting active = 0
+// Deactivate disables a subscription for the given Telegram User ID and Twitch Channel by setting active = 0
 // and unsetting its EventSubID, stopping further notifications.
-func (s *Store) Deactivate(telegramUserID int64) error {
-	_, err := s.db.Exec(`UPDATE subscriptions SET active = 0, eventsub_id = '' WHERE telegram_user_id = ?`, telegramUserID)
+func (s *Store) Deactivate(telegramUserID int64, twitchChannel string) error {
+	_, err := s.db.Exec(`UPDATE subscriptions SET active = 0, eventsub_id = '' WHERE telegram_user_id = ? AND twitch_channel = ?`, telegramUserID, twitchChannel)
+	return err
+}
+
+// DeactivateByEventSubID disables all subscriptions associated with a specific Twitch EventSub ID.
+// This is primarily used when Twitch revokes a webhook subscription.
+func (s *Store) DeactivateByEventSubID(eventSubID string) error {
+	_, err := s.db.Exec(`UPDATE subscriptions SET active = 0, eventsub_id = '' WHERE eventsub_id = ?`, eventSubID)
+	return err
+}
+
+// UpdateUserChatID updates the chat ID for all subscriptions of a specific user.
+func (s *Store) UpdateUserChatID(telegramUserID int64, chatID int64) error {
+	_, err := s.db.Exec(`UPDATE subscriptions SET telegram_chat_id = ? WHERE telegram_user_id = ?`, chatID, telegramUserID)
 	return err
 }
 

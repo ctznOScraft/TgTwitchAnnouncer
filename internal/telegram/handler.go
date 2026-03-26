@@ -41,7 +41,7 @@ func NewCommandHandler(
 }
 
 // Start begins listening to the Telegram event stream and blocks to process incoming messages.
-// It matches valid commands such as /start, /setchannel, /setchat, /subscribe, /stop, and /status.
+// It matches valid commands such as /start, /setchat, /subscribe, /stop, and /status.
 func (h *CommandHandler) Start() {
 	updates := h.bot.GetUpdatesChan()
 	for update := range updates {
@@ -58,8 +58,6 @@ func (h *CommandHandler) Start() {
 		switch msg.Command() {
 		case "start":
 			reply = h.handleStart()
-		case "setchannel":
-			reply = h.handleSetChannel(msg)
 		case "setchat":
 			reply = h.handleSetChat(msg)
 		case "subscribe":
@@ -85,52 +83,14 @@ func (h *CommandHandler) handleStart() string {
 	return `Привет! Я бот для уведомлений о стримах на Twitch.
 
 Команды:
-/setchannel <twitch_login> — указать Twitch-канал
-/setchat <chat_id> — указать Telegram чат/канал для уведомлений
-/subscribe — подписаться на уведомления
-/stop — отписаться от уведомлений
-/status — текущие настройки
+/subscribe <twitch_login> — подписаться на уведомления о начале стрима
+/stop <twitch_login> — отписаться от уведомлений по каналу
+/status — список ваших текущих подписок
+/setchat <chat_id> — изменить чат для всех подписок (по умолчанию уведомления приходят сюда)
 
 Пример настройки:
-1. /setchannel shroud
-2. /setchat -1001234567890
-3. /subscribe`
-}
-
-// handleSetChannel parses the given twitch login and stores it for the user if it exists.
-func (h *CommandHandler) handleSetChannel(msg *tgbotapi.Message) string {
-	args := msg.CommandArguments()
-	if args == "" {
-		return "Укажите логин Twitch-канала. Пример: /setchannel shroud"
-	}
-
-	channelName := strings.TrimSpace(strings.ToLower(args))
-
-	userId, err := h.twitchClient.GetUserId(channelName)
-	if err != nil {
-		return fmt.Sprintf("Канал '%s' не найден на Twitch: %v", channelName, err)
-	}
-
-	sub, err := h.store.GetByTelegramUser(msg.From.ID)
-	if err != nil {
-		if err != sql.ErrNoRows {
-			return fmt.Sprintf("Ошибка базы данных: %v", err)
-		}
-		sub = &storage.Subscription{
-			TelegramUserID: msg.From.ID,
-			CreatedAt:      time.Now(),
-		}
-	}
-
-	sub.TwitchChannel = channelName
-	sub.TwitchUserID = userId
-
-	err = h.store.UpsertSubscription(sub)
-	if err != nil {
-		return fmt.Sprintf("Ошибка сохранения: %v", err)
-	}
-
-	return fmt.Sprintf("✅ Twitch-канал установлен: %s (ID: %s)", channelName, userId)
+1. /setchat -1001234567890 (опционально, если хотите отправлять в группу)
+2. /subscribe shroud`
 }
 
 // handleSetChat configures the destination chat or channel ID for the user's stream notifications.
@@ -145,53 +105,72 @@ func (h *CommandHandler) handleSetChat(msg *tgbotapi.Message) string {
 		return "Неверный формат ID чата. ID должен быть числом."
 	}
 
-	sub, err := h.store.GetByTelegramUser(msg.From.ID)
+	err = h.store.UpdateUserChatID(msg.From.ID, chatID)
+	if err != nil {
+		return fmt.Sprintf("Ошибка обновления: %v", err)
+	}
+
+	return fmt.Sprintf("✅ Чат по умолчанию для ваших текущих подписок установлен: %d.\nНовые подписки всё равно необходимо будет создавать с учетом этого чата (или просто повторно вызовите /setchat).", chatID)
+}
+
+// handleSubscribe activates a subscription by checking if the Twitch channel exists,
+// and subscribing via EventSub.
+func (h *CommandHandler) handleSubscribe(msg *tgbotapi.Message) string {
+	args := msg.CommandArguments()
+	if args == "" {
+		return "Укажите Twitch-канал. Пример: /subscribe shroud"
+	}
+
+	parts := strings.Fields(args)
+	channelName := strings.ToLower(parts[0])
+
+	userId, err := h.twitchClient.GetUserId(channelName)
+	if err != nil {
+		return fmt.Sprintf("Канал '%s' не найден на Twitch.", channelName)
+	}
+
+	sub, err := h.store.GetSubscription(msg.From.ID, channelName)
 	if err != nil {
 		if err != sql.ErrNoRows {
 			return fmt.Sprintf("Ошибка базы данных: %v", err)
 		}
+
+		var chatID int64 = msg.From.ID
+		allSubs, _ := h.store.GetAllByTelegramUser(msg.From.ID)
+		if len(allSubs) > 0 {
+			chatID = allSubs[0].TelegramChatID
+		}
+
 		sub = &storage.Subscription{
 			TelegramUserID: msg.From.ID,
+			TelegramChatID: chatID,
+			TwitchChannel:  channelName,
+			TwitchUserID:   userId,
 			CreatedAt:      time.Now(),
 		}
 	}
 
-	sub.TelegramChatID = chatID
-
-	err = h.store.UpsertSubscription(sub)
-	if err != nil {
-		return fmt.Sprintf("Ошибка сохранения: %v", err)
-	}
-
-	return fmt.Sprintf("✅ Чат для уведомлений установлен: %d", chatID)
-}
-
-// handleSubscribe activates the configured subscription by dispatching a subscribe
-// request to the Twitch EventSub system and marking it as active locally.
-func (h *CommandHandler) handleSubscribe(msg *tgbotapi.Message) string {
-	sub, err := h.store.GetByTelegramUser(msg.From.ID)
-	if err != nil {
-		return "Сначала настройте канал и чат с помощью /setchannel и /setchat"
-	}
-
-	if sub.TwitchChannel == "" {
-		return "Сначала укажите Twitch-канал: /setchannel <login>"
-	}
-	if sub.TelegramChatID == 0 {
-		return "Сначала укажите чат для уведомлений: /setchat <chat_id>"
-	}
-
 	if sub.Active {
-		return "Вы уже подписаны на уведомления. Используйте /stop чтобы отписаться."
+		return fmt.Sprintf("Вы уже подписаны на уведомления для канала %s.", sub.TwitchChannel)
 	}
 
-	eventSubID, err := h.twitchClient.SubscribeToStream(
-		sub.TwitchUserID,
-		h.callbackUrl,
-		h.webhookSecret,
-	)
-	if err != nil {
-		return fmt.Sprintf("Ошибка подписки на Twitch: %v", err)
+	activeSubs, err := h.store.GetActiveByTwitchUserID(sub.TwitchUserID)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Sprintf("Ошибка базы данных: %v", err)
+	}
+
+	eventSubID := ""
+	if len(activeSubs) > 0 && activeSubs[0].EventSubID != "" {
+		eventSubID = activeSubs[0].EventSubID
+	} else {
+		eventSubID, err = h.twitchClient.SubscribeToStream(
+			sub.TwitchUserID,
+			h.callbackUrl,
+			h.webhookSecret,
+		)
+		if err != nil {
+			return fmt.Sprintf("Ошибка подписки на Twitch: %v", err)
+		}
 	}
 
 	sub.EventSubID = eventSubID
@@ -202,60 +181,64 @@ func (h *CommandHandler) handleSubscribe(msg *tgbotapi.Message) string {
 		return fmt.Sprintf("Ошибка сохранения: %v", err)
 	}
 
-	return fmt.Sprintf("✅ Подписка активирована!\nКанал: %s\nЧат: %d\nEventSub ID: %s",
-		sub.TwitchChannel, sub.TelegramChatID, eventSubID)
+	return fmt.Sprintf("✅ Подписка на %s активирована!\nЧат: %d", sub.TwitchChannel, sub.TelegramChatID)
 }
 
-// handleStop un-registers the subscription from Twitch EventSub and marks it deactivated locally.
+// handleStop un-registers the subscription locally, and from Twitch EventSub if no one else needs it.
 func (h *CommandHandler) handleStop(msg *tgbotapi.Message) string {
-	sub, err := h.store.GetByTelegramUser(msg.From.ID)
-	if err != nil {
-		return "У вас нет активных подписок."
+	args := msg.CommandArguments()
+	if args == "" {
+		return "Укажите Twitch-канал для отписки. Пример: /stop shroud"
 	}
 
-	if !sub.Active {
-		return "У вас нет активных подписок."
+	channelName := strings.TrimSpace(strings.ToLower(args))
+
+	sub, err := h.store.GetSubscription(msg.From.ID, channelName)
+	if err != nil || !sub.Active {
+		return fmt.Sprintf("Вы не подписаны на канал %s.", channelName)
 	}
 
-	if sub.EventSubID != "" {
-		err = h.twitchClient.DeleteSubscription(sub.EventSubID)
-		if err != nil {
-			log.Printf("Ошибка удаления EventSub %s: %v", sub.EventSubID, err)
-		}
-	}
-
-	err = h.store.Deactivate(msg.From.ID)
+	err = h.store.Deactivate(msg.From.ID, channelName)
 	if err != nil {
 		return fmt.Sprintf("Ошибка деактивации: %v", err)
 	}
 
-	return "✅ Подписка деактивирована."
+	if sub.EventSubID != "" {
+		activeSubs, _ := h.store.GetActiveByTwitchUserID(sub.TwitchUserID)
+		if len(activeSubs) == 0 {
+			err = h.twitchClient.DeleteSubscription(sub.EventSubID)
+			if err != nil {
+				log.Printf("Ошибка удаления EventSub %s: %v", sub.EventSubID, err)
+			}
+		}
+	}
+
+	return fmt.Sprintf("✅ Подписка на %s деактивирована.", channelName)
 }
 
-// handleStatus reports current settings to the user.
+// handleStatus reports current settings and all active subscriptions to the user.
 func (h *CommandHandler) handleStatus(msg *tgbotapi.Message) string {
-	sub, err := h.store.GetByTelegramUser(msg.From.ID)
-	if err != nil {
-		return "У вас пока нет настроек. Начните с /setchannel и /setchat."
+	subs, err := h.store.GetAllByTelegramUser(msg.From.ID)
+	if err != nil || len(subs) == 0 {
+		return "У вас пока нет подписок. Начните с /subscribe <логин>."
 	}
 
-	status := "❌ Неактивна"
-	if sub.Active {
-		status = "✅ Активна"
+	var activeList []string
+	var chatIDStr string
+
+	for _, sub := range subs {
+		if sub.Active {
+			activeList = append(activeList, fmt.Sprintf("- %s", sub.TwitchChannel))
+			chatIDStr = fmt.Sprintf("%d", sub.TelegramChatID)
+		}
 	}
 
-	chatStr := "не задан"
-	if sub.TelegramChatID != 0 {
-		chatStr = fmt.Sprintf("%d", sub.TelegramChatID)
-	}
-
-	channelStr := "не задан"
-	if sub.TwitchChannel != "" {
-		channelStr = sub.TwitchChannel
+	if len(activeList) == 0 {
+		return "У вас нет активных подписок."
 	}
 
 	return fmt.Sprintf(
-		"📋 Ваши настройки:\n\nTwitch-канал: %s\nTelegram чат: %s\nПодписка: %s",
-		channelStr, chatStr, status,
+		"📋 Ваши активные подписки:\n%s\n\nTelegram чат для уведомлений: %s",
+		strings.Join(activeList, "\n"), chatIDStr,
 	)
 }

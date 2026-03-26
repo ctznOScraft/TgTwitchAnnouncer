@@ -20,10 +20,7 @@ type Config struct {
 // LoadConfig reads configuration from the environment and a .env file if available.
 // It returns an error if any of the required fields are missing.
 func LoadConfig() (*Config, error) {
-	err := godotenv.Load()
-	if err != nil {
-		return nil, err
-	}
+	_ = godotenv.Load() // Ignore error, as env vars might be provided directly via host/Docker without a .env file
 
 	cfg := Config{
 		TelegramToken:      os.Getenv("TG_TOKEN"),

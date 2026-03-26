@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 )
 
 // SubscriptionDetail contains details about the Twitch EventSub subscription.
@@ -67,7 +68,9 @@ func handleWebhook(
 		return
 	}
 
-	if notification.Challenge != "" {
+	messageType := r.Header.Get("Twitch-Eventsub-Message-Type")
+
+	if messageType == "webhook_callback_verification" {
 		w.Header().Set("Content-Type", "text/plain")
 		_, err = w.Write([]byte(notification.Challenge))
 		if err != nil {
@@ -77,7 +80,17 @@ func handleWebhook(
 		return
 	}
 
-	if notification.Subscription.Type == "stream.online" {
+	if messageType == "revocation" {
+		log.Printf("Подписка Twitch отозвана! ID: %s, Причина: %s", notification.Subscription.ID, notification.Subscription.Status)
+		err = store.DeactivateByEventSubID(notification.Subscription.ID)
+		if err != nil {
+			log.Printf("Ошибка деактивации отозванной подписки: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if messageType == "notification" && notification.Subscription.Type == "stream.online" {
 		broadcasterID := notification.Event.BroadcasterUserId
 		broadcasterLogin := notification.Event.BroadcasterUserLogin
 		broadcasterName := notification.Event.BroadcasterUserName
@@ -110,13 +123,23 @@ func handleWebhook(
 // resubscribeActive checks all active subscriptions and re-creates EventSub subscriptions if needed.
 // This function is useful for restoring subscriptions upon application startup.
 func resubscribeActive(store *storage.Store, twitchClient *twitch.Client, cfg *config.Config) {
+	time.Sleep(2 * time.Second)
+
 	subs, err := store.GetAllActive()
 	if err != nil {
 		log.Printf("Ошибка загрузки активных подписок: %v", err)
 		return
 	}
 
+	seenStreamers := make(map[string]string)
+
 	for _, sub := range subs {
+		if existingEventSubID, ok := seenStreamers[sub.TwitchUserID]; ok {
+			sub.EventSubID = existingEventSubID
+			_ = store.UpsertSubscription(&sub)
+			continue
+		}
+
 		log.Printf("Переподписка на канал %s (user_id: %s)", sub.TwitchChannel, sub.TwitchUserID)
 
 		if sub.EventSubID != "" {
@@ -133,6 +156,7 @@ func resubscribeActive(store *storage.Store, twitchClient *twitch.Client, cfg *c
 			continue
 		}
 
+		seenStreamers[sub.TwitchUserID] = eventSubID
 		sub.EventSubID = eventSubID
 		err = store.UpsertSubscription(&sub)
 		if err != nil {
