@@ -1,0 +1,13 @@
+# Environment
+.env
+
+# Database
+*.db
+
+# Binary
+TgTwitchAnnouncer
+TgTwitchAnnouncer.exe
+
+# IDE
+.idea/
+.vscode/
