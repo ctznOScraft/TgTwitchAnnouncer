@@ -81,7 +81,8 @@ func handleWebhook(
 	}
 
 	if messageType == "revocation" {
-		log.Printf("Подписка Twitch отозвана! ID: %s, Причина: %s", notification.Subscription.ID, notification.Subscription.Status)
+		log.Printf("Подписка Twitch отозвана! ID: %s, Причина: %s", notification.Subscription.ID,
+			notification.Subscription.Status)
 		err = store.DeactivateByEventSubID(notification.Subscription.ID)
 		if err != nil {
 			log.Printf("Ошибка деактивации отозванной подписки: %v", err)

@@ -97,7 +97,8 @@ func (h *CommandHandler) handleStart() string {
 func (h *CommandHandler) handleSetChat(msg *tgbotapi.Message) string {
 	args := msg.CommandArguments()
 	if args == "" {
-		return "Укажите ID чата/канала. Пример: /setchat -1001234567890\n\nЧтобы узнать ID, добавьте бота в чат/канал и перешлите мне оттуда любое сообщение, или используйте @userinfobot."
+		return "Укажите ID чата/канала. Пример: /setchat -1001234567890\n\nЧтобы узнать ID, " +
+			"добавьте бота в чат/канал и перешлите мне оттуда любое сообщение, или используйте @userinfobot."
 	}
 
 	chatID, err := strconv.ParseInt(strings.TrimSpace(args), 10, 64)
@@ -110,7 +111,8 @@ func (h *CommandHandler) handleSetChat(msg *tgbotapi.Message) string {
 		return fmt.Sprintf("Ошибка обновления: %v", err)
 	}
 
-	return fmt.Sprintf("✅ Чат по умолчанию для ваших текущих подписок установлен: %d.\nНовые подписки всё равно необходимо будет создавать с учетом этого чата (или просто повторно вызовите /setchat).", chatID)
+	return fmt.Sprintf("✅ Чат по умолчанию для ваших текущих подписок установлен: %d.\nНовые подписки "+
+		"всё равно необходимо будет создавать с учетом этого чата (или просто повторно вызовите /setchat).", chatID)
 }
 
 // handleSubscribe activates a subscription by checking if the Twitch channel exists,

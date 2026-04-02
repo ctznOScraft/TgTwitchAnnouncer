@@ -66,7 +66,8 @@ func (s *Store) Close() error {
 // It relies on conflict resolution (ON CONFLICT) for telegram_user_id and twitch_user_id.
 func (s *Store) UpsertSubscription(sub *Subscription) error {
 	query := `
-	INSERT INTO subscriptions (telegram_user_id, telegram_chat_id, twitch_channel, twitch_user_id, eventsub_id, active, created_at)
+	INSERT INTO subscriptions (telegram_user_id, telegram_chat_id, twitch_channel, 
+	                           twitch_user_id, eventsub_id, active, created_at)
 	VALUES (?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(telegram_user_id, twitch_user_id) DO UPDATE SET
 		telegram_chat_id = excluded.telegram_chat_id,
@@ -135,7 +136,8 @@ func (s *Store) GetAllActive() ([]Subscription, error) {
 // Deactivate disables a subscription for the given Telegram User ID and Twitch Channel by setting active = 0
 // and unsetting its EventSubID, stopping further notifications.
 func (s *Store) Deactivate(telegramUserID int64, twitchChannel string) error {
-	_, err := s.db.Exec(`UPDATE subscriptions SET active = 0, eventsub_id = '' WHERE telegram_user_id = ? AND twitch_channel = ?`, telegramUserID, twitchChannel)
+	_, err := s.db.Exec(`UPDATE subscriptions SET active = 0, eventsub_id = '' WHERE telegram_user_id = ? AND twitch_channel = ?`,
+		telegramUserID, twitchChannel)
 	return err
 }
 
@@ -148,7 +150,8 @@ func (s *Store) DeactivateByEventSubID(eventSubID string) error {
 
 // UpdateUserChatID updates the chat ID for all subscriptions of a specific user.
 func (s *Store) UpdateUserChatID(telegramUserID int64, chatID int64) error {
-	_, err := s.db.Exec(`UPDATE subscriptions SET telegram_chat_id = ? WHERE telegram_user_id = ?`, chatID, telegramUserID)
+	_, err := s.db.Exec(`UPDATE subscriptions SET telegram_chat_id = ? WHERE telegram_user_id = ?`, chatID,
+		telegramUserID)
 	return err
 }
 
