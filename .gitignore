@@ -1,13 +1,42 @@
-# Environment
+/TgTwitchAnnouncer
+/TgTwitchAnnouncer.exe
+/tgtwitchbot
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
 .env
+.env.*
+!.env.example
 
-# Database
 *.db
+*.db-journal
+*.db-shm
+*.db-wal
 
-# Binary
-TgTwitchAnnouncer
-TgTwitchAnnouncer.exe
+*.log
 
-# IDE
+.DS_Store
+Thumbs.db
+
 .idea/
+*.iws
+*.iml
+*.ipr
+out/
+
 .vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+*~
+*.swp
+*.bak
+
+*.ps1
+*.sh
