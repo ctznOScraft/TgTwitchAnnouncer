@@ -1,0 +1,45 @@
+name: Go Build & Test
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.23']
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ matrix.go-version }}
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Build
+      run: go build -v ./...
+
+    - name: Run tests
+      run: go test -v ./...
+
+    - name: Format check
+      run: |
+        if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
+          echo "Please run: gofmt -s -w ."
+          gofmt -s -d .
+          exit 1
+        fi
+
+    - name: Build for Linux
+      run: GOOS=linux GOARCH=amd64 go build -o tgtwitchbot-linux main.go
+
+    - name: Build for Windows
+      run: GOOS=windows GOARCH=amd64 go build -o tgtwitchbot.exe main.go
